@@ -1,4 +1,4 @@
-    //new vm.c now has dumbvm.c contents
+//new vm.c now has dumbvm.c contents
 
 
 #include <types.h>
@@ -52,7 +52,6 @@ vm_bootstrap(void)
 		firstpaddress++;
 	}
 	//kprintf("adjusting firstpaddress is %d\n",firstpaddress);	
-	//kprintf("lastpaddress is %d\n",lastpaddress);
 		
 	total_pages = (lastpaddress - firstpaddress) / (PAGE_SIZE);
 	//kprintf("Total number of free pages in physical memory: %d\n",total_pages);
