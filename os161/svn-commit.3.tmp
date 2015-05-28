@@ -1,0 +1,7 @@
+
+--This line, and those below, will be ignored--
+
+M    kern/include/lib.h
+M    kern/main/menu.c
+M    kern/lib/kprintf.c
+M    kern/arch/mips/mips/syscall.c

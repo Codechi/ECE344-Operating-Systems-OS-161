@@ -1,0 +1,101 @@
+10
+
+dir
+120
+svn+ssh://ug250.eecg.utoronto.ca/svn/os-028/svn/trunk/bin
+svn+ssh://ug250.eecg.utoronto.ca/svn/os-028/svn
+
+
+
+2015-01-17T02:37:02.831030Z
+3
+hossai68
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+f80ac5a4-0cd0-4425-abd1-a56e0dabe141
+
+sync
+dir
+
+rmdir
+dir
+
+Makefile
+file
+
+
+
+
+2015-01-17T02:26:00.288310Z
+dca1c0e2cb1dbc80526c5dd8608c63be
+2015-01-17T02:20:27.165873Z
+2
+hossai68
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+522
+
+ls
+dir
+
+rm
+dir
+
+true
+dir
+
+cp
+dir
+
+mv
+dir
+
+mkdir
+dir
+
+cat
+dir
+
+ln
+dir
+
+false
+dir
+
+pwd
+dir
+
+sh
+dir
+

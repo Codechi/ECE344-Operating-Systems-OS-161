@@ -1,0 +1,392 @@
+    //new vm.c now has dumbvm.c contents
+
+
+#include <types.h>
+#include <kern/errno.h>
+#include <lib.h>
+#include <thread.h>
+#include <curthread.h>
+#include <addrspace.h>
+#include <vm.h>
+#include <machine/spl.h>
+#include <machine/tlb.h>
+
+/*
+ * Dumb MIPS-only "VM system" that is intended to only be just barely
+ * enough to struggle off the ground. You should replace all of this
+ * code while doing the VM assignment. In fact, starting in that
+ * assignment, this file is not included in your kernel!
+ */
+
+/* under dumbvm, always have 48k of user stack */
+#define DUMBVM_STACKPAGES    12
+
+
+
+paddr_t lastaddr, firstaddr, freeaddr;
+struct coremap_element* coremap;
+struct coremap_element* element_ptr;
+static unsigned long pages_in_coremap;
+
+int done_vm_bootstrap;
+
+//making own lock variables variable
+
+
+//----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+void
+vm_bootstrap(void)
+{
+
+	int page_num, coremap_size;
+	paddr_t coremapaddr, temp;
+	
+	ram_getsize(&firstaddr, &lastaddr);
+	page_num = (lastaddr-firstaddr) / PAGE_SIZE;
+	
+	freeaddr = firstaddr + page_num * sizeof(struct coremap_element);
+	freeaddr = ROUNDUP(freeaddr, PAGE_SIZE);// added for pr->nfree error
+	
+	coremap = (struct page*)PADDR_TO_KVADDR(firstaddr);
+	coremapaddr = freeaddr - firstaddr;
+	coremap_size = ROUNDUP(coremapaddr, PAGE_SIZE)/PAGE_SIZE;
+	
+	pages_in_coremap=page_num;
+	
+	int i;
+	for (i=0;i<page_num;i++)
+	{
+		if(i<coremap_size)
+		{
+			coremap[i].state = 1;
+		}
+		else
+		{
+			coremap[i].state = 0;
+			//coremap[i].contained=false;
+		}
+		temp = PAGE_SIZE * i + freeaddr;
+		coremap[i].physical_address = temp;
+		coremap[i].virtual_address = PADDR_TO_KVADDR(temp);
+	}
+	
+	
+<<<<<<< .mine
+=======
+	
+	paddr_t loop_paddress;
+	struct coremap_element *element_ptr;
+	
+	/*	old code
+	
+	int pages_processed = 0;
+	
+	//FOR KERNEL PAGES which for now stores for steal mem and kernel stuff
+	for (loop_paddress = 0; (int) loop_paddress < (int) freepaddress; loop_paddress += PAGE_SIZE)
+	{
+		element_ptr = coremap_ptr + (loop_paddress/PAGE_SIZE) * sizeof(struct coremap_element);
+		
+		//putting in coremap entry details INCLUDING VIRTUAL ADDRESS!!!!
+		element_ptr->physical_address = loop_paddress;
+		element_ptr->virtual_address = (vaddr_t) PADDR_TO_KVADDR(loop_paddress);	
+		element_ptr->state = FIXED;
+		pages_processed++;
+		
+		//kprintf("set physical address to %u AND virtual address to %u\n",(int) element_ptr->physical_address,(int) element_ptr->virtual_address);
+	}
+	
+	kprintf("pages processed after 1st loop: %d\n",pages_processed);	
+	kprintf("loop_paddress = %d\n", (int) loop_paddress);
+	kprintf("freepaddress = %d\n", (int) freepaddress);
+	
+	//FOR FREE PAGES
+	
+	*/
+	
+	int  i = 0;
+	for(loop_paddress = freepaddress; (int) loop_paddress < (int) lastpaddress; loop_paddress += PAGE_SIZE)
+	{
+		element_ptr = coremap_ptr + i * sizeof(struct coremap_element);
+		
+		//putting in coremap entry details BUT DIDNT SET VIRTUAL ADDRESS YET!!!
+		element_ptr->physical_address = loop_paddress;
+		element_ptr->virtual_address = (vaddr_t) PADDR_TO_KVADDR(loop_paddress);
+		element_ptr->state = FREE;
+		i++;
+
+	}
+	
+>>>>>>> .r109
+	//Printing out coremap info
+	for (i = 0; i < page_num; i++)	//set to 51 for now as too many entries if RAM big
+	{
+		element_ptr = coremap + i * sizeof(struct coremap_element);
+		
+		kprintf("page entry: %d  physical adress: %u virtual address: %u state: %d\n", i, element_ptr->physical_address, element_ptr->virtual_address, element_ptr->state);
+		
+	}
+	done_vm_bootstrap = 1;
+	kprintf("In vm_bootstrap: Done_vm_bootstrap = %d\n",done_vm_bootstrap);
+	
+	//splx(spl);//not in code
+	return;
+		
+}
+
+//----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+paddr_t
+getppages(unsigned long npages)	//called from alloc_kpages
+{
+		/* OLD CODE - this works
+		int spl;
+		paddr_t addr;
+		spl = splhigh();
+		addr = ram_stealmem(npages);	//in ram.c - just moves firstpaddr by that many pages
+		splx(spl);
+		return addr;
+		*/
+
+	//NEW CODE
+	///*
+	int spl;
+	paddr_t addr;
+	//dont put print statements here
+	
+	
+	if(done_vm_bootstrap == 0)
+	{
+		//Cant print anytihg here, cause everything else not set up when enters here
+		spl = splhigh();
+		
+		addr = ram_stealmem(npages);	//in ram.c - just moves firstpaddr by that many pages
+		splx(spl);
+		return addr;		
+	}
+
+	else //(done_vm_bootstrap ==1)
+	{
+<<<<<<< .mine
+		unsigned long page_start = 0;
+		unsigned long block_count = npages;
+		unsigned long i;
+		
+		// finding first free n pages
+		for (i=0;i<pages_in_coremap;i++)
+		{
+			if(coremap[i].state==0)
+=======
+			spl = splhigh();		
+			
+			kprintf("in getppages where done_vm_bootstrap = %d\n",done_vm_bootstrap);
+			kprintf("npages in getppages= %d\n",npages);
+			
+			struct coremap_element *element_access_ptr;
+			element_access_ptr = coremap_ptr;//coremap_ptr points to start of coremap
+			
+			int consectuve_pages_found = 0;
+			int i;
+			
+			int starting_page = 0;
+			
+			//looping through all pages to find npages free consecutive pages
+			for (i = 0; i < total_pages; i++) //was will (lastpaddr / PAGE_SIZE)
+>>>>>>> .r109
+			{
+				block_count--;
+				if(block_count == 0)
+				{
+					break;
+				}
+			}
+			else
+			{
+				block_count=npages;
+				page_start=i+1;
+			}
+		}
+		
+		if(i==pages_in_coremap)
+		{
+			splx(spl);
+			return 0;
+		}
+		else
+		{
+			for(i=0;i<npages;i++)
+			{
+				coremap[i+page_start].state=1;
+				//coremap[i+page_start].contained=true;
+				//coremap[i+page_start].partofpage=page_start;
+			}
+<<<<<<< .mine
+			addr = coremap[page_start].physical_address;
+		}
+		
+			//Printing out coremap info
+		for (i = 0; i < pages_in_coremap; i++)	//set to 51 for now as too many entries if RAM big
+		{
+			element_ptr = coremap + i * sizeof(struct coremap_element);
+		
+		kprintf("page entry: %d  physical adress: %u virtual address: %u state: %d\n", i, element_ptr->physical_address, element_ptr->virtual_address, element_ptr->state);
+		
+		}
+		splx(spl);
+		return addr;
+	}
+		
+=======
+						
+			kprintf("DEBUG 2: entry 28 has state: %d and physical address %u\n",test_ptr->state,test_ptr->physical_address);
+			
+		 	//finding physical address of first page of the ones chosen
+			element_access_ptr = coremap_ptr + (starting_page*sizeof(struct coremap_element));
+			addr = element_access_ptr->physical_address;
+			element_access_ptr = coremap_ptr;
+			//V(lock_alloc_kpages);
+			
+			kprintf("Physical address being returned: %u and hex representation is %x\n",addr,addr);
+			
+			kprintf("DEBUG 3: entry 28 has state: %d and physical address %u\n",test_ptr->state,test_ptr->physical_address);
+			
+			splx(spl);
+			return addr;
+	}
+
+	//*/			
+
+>>>>>>> .r109
+}
+
+
+//----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+/* Allocate/free some kernel-space virtual pages */
+vaddr_t 
+alloc_kpages(int npages)	//called from kmalloc. which is in lib/kheap.c
+{		
+		
+		//kprintf("inside alloc_kpages: value of done_vm_bootstrap = %d\n", done_vm_bootstrap);
+		paddr_t pa;
+		pa = getppages(npages);
+		if (pa==0) {
+			//kprintf("in alloc_kpages: returning %u and hex representation is %x to kheap\n",pa,pa);
+			return 0;
+		}
+		//kprintf("in alloc_kpages: returning %u and hex representation is %x to kheap\n",pa,pa);
+		
+		return PADDR_TO_KVADDR(pa);
+	
+}
+
+//----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+void 
+free_kpages(vaddr_t addr)
+{
+	/* nothing */
+	
+	//kprintf("inside free_kpages, value of done_vm_bootstrap = %d\n", done_vm_bootstrap);
+
+	(void)addr;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+int
+vm_fault(int faulttype, vaddr_t faultaddress)
+{
+	vaddr_t vbase1, vtop1, vbase2, vtop2, stackbase, stacktop;
+	paddr_t paddr;
+	int i;
+	u_int32_t ehi, elo;
+	struct addrspace *as;
+	int spl;
+
+	spl = splhigh();
+
+	faultaddress &= PAGE_FRAME;
+
+	DEBUG(DB_VM, "dumbvm: fault: 0x%x\n", faultaddress);
+
+	switch (faulttype) {
+	    case VM_FAULT_READONLY:
+		/* We always create pages read-write, so we can't get this */
+		panic("dumbvm: got VM_FAULT_READONLY\n");
+	    case VM_FAULT_READ:
+	    case VM_FAULT_WRITE:
+		break;
+	    default:
+		splx(spl);
+		return EINVAL;
+	}
+
+	as = curthread->t_vmspace;
+	if (as == NULL) {
+		/*
+		 * No address space set up. This is probably a kernel
+		 * fault early in boot. Return EFAULT so as to panic
+		 * instead of getting into an infinite faulting loop.
+		 */
+		return EFAULT;
+	}
+
+	/* Assert that the address space has been set up properly. */
+	assert(as->as_vbase1 != 0);
+	assert(as->as_pbase1 != 0);
+	assert(as->as_npages1 != 0);
+	assert(as->as_vbase2 != 0);
+	assert(as->as_pbase2 != 0);
+	assert(as->as_npages2 != 0);
+	assert(as->as_stackpbase != 0);
+	assert((as->as_vbase1 & PAGE_FRAME) == as->as_vbase1);
+	assert((as->as_pbase1 & PAGE_FRAME) == as->as_pbase1);
+	assert((as->as_vbase2 & PAGE_FRAME) == as->as_vbase2);
+	assert((as->as_pbase2 & PAGE_FRAME) == as->as_pbase2);
+	assert((as->as_stackpbase & PAGE_FRAME) == as->as_stackpbase);
+
+	vbase1 = as->as_vbase1;
+	vtop1 = vbase1 + as->as_npages1 * PAGE_SIZE;
+	vbase2 = as->as_vbase2;
+	vtop2 = vbase2 + as->as_npages2 * PAGE_SIZE;
+	stackbase = USERSTACK - DUMBVM_STACKPAGES * PAGE_SIZE;
+	stacktop = USERSTACK;
+
+	if (faultaddress >= vbase1 && faultaddress < vtop1) {
+		paddr = (faultaddress - vbase1) + as->as_pbase1;
+	}
+	else if (faultaddress >= vbase2 && faultaddress < vtop2) {
+		paddr = (faultaddress - vbase2) + as->as_pbase2;
+	}
+	else if (faultaddress >= stackbase && faultaddress < stacktop) {
+		paddr = (faultaddress - stackbase) + as->as_stackpbase;
+	}
+	else {
+		splx(spl);
+		return EFAULT;
+	}
+
+	/* make sure it's page-aligned */
+	assert((paddr & PAGE_FRAME)==paddr);
+
+	for (i=0; i<NUM_TLB; i++) {
+		TLB_Read(&ehi, &elo, i);
+		if (elo & TLBLO_VALID) {
+			continue;
+		}
+		ehi = faultaddress;
+		elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+		DEBUG(DB_VM, "dumbvm: 0x%x -> 0x%x\n", faultaddress, paddr);
+		TLB_Write(ehi, elo, i);
+		splx(spl);
+		return 0;
+	}
+
+	kprintf("dumbvm: Ran out of TLB entries - cannot handle page fault\n");
+	splx(spl);
+	return EFAULT;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+

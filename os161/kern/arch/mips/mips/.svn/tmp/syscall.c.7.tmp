@@ -1,0 +1,363 @@
+#include <types.h>
+#include <kern/errno.h>
+#include <lib.h>
+#include <machine/pcb.h>
+#include <machine/spl.h>
+#include <machine/trapframe.h>
+#include <kern/callno.h>
+#include <syscall.h>
+#include <thread.h>
+#include <curthread.h>
+
+
+
+int md_fork_entry = 1;//to chceck how many times md_fork_entry is called
+
+/*
+ * System call handler.
+ *
+ * A pointer to the trapframe created during exception entry (in
+ * exception.S) is passed in.
+ *
+ * The calling conventions for syscalls are as follows: Like ordinary
+ * function calls, the first 4 32-bit arguments are passed in the 4
+ * argument registers a0-a3. In addition, the system call number is
+ * passed in the v0 register.
+ *
+ * On successful return, the return value is passed back in the v0
+ * register, like an ordinary function call, and the a3 register is
+ * also set to 0 to indicate success.
+ *
+ * On an error return, the error code is passed back in the v0
+ * register, and the a3 register is set to 1 to indicate failure.
+ * (Userlevel code takes care of storing the error code in errno and
+ * returning the value -1 from the actual userlevel syscall function.
+ * See src/lib/libc/syscalls.S and related files.)
+ *
+ * Upon syscall return the program counter stored in the trapframe
+ * must be incremented by one instruction; otherwise the exception
+ * return code will restart the "syscall" instruction and the system
+ * call will repeat forever.
+ *
+ * Since none of the OS/161 system calls have more than 4 arguments,
+ * there should be no need to fetch additional arguments from the
+ * user-level stack.
+ *
+ * Watch out: if you make system calls that have 64-bit quantities as
+ * arguments, they will get passed in pairs of registers, and not
+ * necessarily in the way you expect. We recommend you don't do it.
+ * (In fact, we recommend you don't use 64-bit quantities at all. See
+ * arch/mips/include/types.h.)
+ */
+
+
+
+//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+//called from arch/mips/mips/trap.c's mips_trap function using mips_syscall(tf) to handle system call. so go to appropriate handler depending on system call
+void
+mips_syscall(struct trapframe *tf) //trapframe definition in trapframe.h
+{
+	
+	int callno;
+	int32_t retval;
+	int err = 0;
+
+	assert(curspl==0);
+
+	callno = tf->tf_v0;
+
+	//added in 
+	int write_return;
+	int read_return;
+	int fork_return;
+	int gettingpid;//for sys_exit
+	int wait_return;
+
+	/*
+	 * Initialize retval to 0. Many of the system calls don't
+	 * really return a value, just 0 for success and -1 on
+	 * error. Since retval is the value returned on success,
+	 * initialize it to 0 by default; thus it's not necessary to
+	 * deal with it except for calls that return other values, 
+	 * like write.
+	 */
+	retval = 0;
+
+	//tf contains execution state of parent
+	//call no.s in os161/kern/include/kern/callno.h
+	switch (callno) { 
+	    case SYS_reboot:
+		err = sys_reboot(tf->tf_a0);
+		break;
+
+	    /* Add stuff here */
+
+	//system calls such as sys_read, sys_write in userprog directory
+	case SYS_write:
+		write_return = sys_write(tf->tf_a0,tf->tf_a1,tf->tf_a2,&retval);
+		if(write_return <0)
+ 			err = 1;
+ 		else 
+ 			err = 0;
+ 		break;
+ 	
+ 	case SYS_read:
+ 		read_return = sys_read(tf->tf_a0,tf->tf_a1,tf->tf_a2,&retval);
+ 		if(read_return <0)
+ 			err = 1;
+ 		else 
+ 			err = 0;
+	    break;
+	
+	
+	
+	//System calls such as sys_fork, sys_getpid, sys_waitpid in this file - syscall.c
+	case SYS_fork:
+ 		fork_return = sys_fork(tf,&retval);// if successful, fork_return will be zero, and retval will be child's pid
+ 		if(fork_return < 0)
+ 			err = 1;
+ 		else
+ 			err = 0;
+	    break;
+	    
+	case SYS_getpid://according to man file, get pid does not fail so no retval
+		retval = sys_getpid();
+		break;
+		
+	case SYS__exit:// sys__exit has no return value
+	{
+		sys__exit(tf->tf_a0,&gettingpid);//getting pid will get pid of thread that exited
+		//V(process_table[gettingpid].exit_sem);
+		break;
+	}	
+	case SYS_waitpid:// sys_wait
+		wait_return = sys_waitpid(tf->tf_a0, tf->tf_a1, tf->tf_a2, &retval);
+		if(wait_return < 0)
+			err = 1;
+		else	
+			err = 0;
+		break;
+		
+	//case SYS_execv:
+		//sys_execv(tf->tf_a0, tf->tf_a1);
+		//break;
+			
+	    default:
+		kprintf("Unknown syscall %d\n", callno);
+		err = ENOSYS;
+		break;
+	}
+
+	//a3 like a flag of 0 or 1 where 1 means an error - can see os161/lib/libc/syscalls-mips.S
+	
+	if (err) {
+		/*
+		 * Return the error code. This gets converted at
+		 * userlevel to a return value of -1 and the error
+		 * code in errno.
+		 */
+
+		tf->tf_v0 = retval; //in this case, retval wiill have error code
+		tf->tf_a3 = 1;      /* signal an error */
+	}
+	else {
+		/* Success. */		
+		tf->tf_v0 = retval; //in this case retval will have return value depending on which system call
+		tf->tf_a3 = 0;      /* signal no error */ 
+	}
+	
+	/*
+	 * Now, advance the program counter, to avoid restarting
+	 * the syscall over and over again.
+	 */
+	
+	tf->tf_epc += 4;
+
+	/* Make sure the syscall code didn't forget to lower spl */
+	assert(curspl==0);
+
+}
+
+//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+int sys_fork(struct trapframe *tf, int* returnval)
+{
+	//need to be dynamocally allcoated because thread fork needs this child frame and if parent finishes
+	//before child, this variable would be lost
+	struct trapframe *child_tf;
+	child_tf  = (struct trapframe*) kmalloc(sizeof(struct trapframe));
+	if(child_tf == NULL)
+	{
+		kprintf("Error: Not enough memory to allocate\n");//not needed according to specifications
+		*returnval = ENOMEM;
+		return -1;
+	}
+	
+	*child_tf = *tf; //to copy trapframe contents from parent to child trapframe
+	
+	//curthread in os61/kern/thread/thread.c and t_vmspace is a struct of type addrspace. 
+	//Addrspace in kern/include 
+	 struct addrspace*  parent_addrspace = curthread->t_vmspace;	
+	 struct addrspace*  child_addrspace;//address space for child
+	
+
+	 //as_copy prototype in os161/kern/include/addressspace.h and source code in os161/kern/vm/addrspace.c
+	 //int as_copy(struct addrspace *src, struct addrspace **ret);
+	int as_copy_return;
+	
+	//child gets new address space and will have same contents of parent's address space. The thread has not made yet, just have contents
+	as_copy_return = as_copy(parent_addrspace,&child_addrspace);
+	if(as_copy_return != 0)//as_copy returns either 0 or ENOMEM
+	{
+		kprintf("Error in copying parent's contents onto child\n");//not needed according to specifications
+		*returnval = as_copy_return;//as_copy returns ENOMEM if error
+		return -1;	
+	}
+	
+        //dont know if needed
+        as_activate(curthread->t_vmspace);
+        
+	
+	int thread_fork_return;        
+      	struct thread* new_child_thread; //new thread which will point to new child thread after thread_fork
+      	
+      	//thread_fork in os161/kern/thread.c
+    	//int thread_fork(const char *name, void *data1, unsigned long data2, void (*func)(void *, unsigned long), struct thread **ret)	
+	thread_fork_return = thread_fork(curthread->t_name, child_tf,  (unsigned long ) child_addrspace, md_forkentry, &new_child_thread);
+	
+	if(thread_fork_return !=0)
+	{
+		kprintf("Error: thread_fork did not work\n");//not needed according to specifications
+		*returnval = thread_fork_return;//thread_fork returns whatever error returned
+		return -1;
+	}
+		
+	//kprintf("syscall.c: I am parent having pid %d and my childpid is %d\n",(int) sys_getpid(),new_child_thread->thread_pid);//VERY USEFUL FOR TESTING FORK for parent
+	
+	*returnval = new_child_thread-> thread_pid;	//for parent, set returnval to pid of child
+	return 0;
+		
+}
+
+//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+int md_forkentry(struct trapframe * child_tf, unsigned long converted_ptr_child_addrspace)
+{
+	/*
+	 * This function is provided as a reminder. You need to write
+	 * both it and the code that calls it.
+	 *
+	 * Thus, you can trash it and do things another way if you prefer.
+	 */
+	 
+	// kprintf("Entering md_forkentry for the %dth time\n", md_fork_entry); //USEFUL FOR TESTING, KEEP LATER
+	 md_fork_entry++;
+	 	 
+	 child_tf->tf_v0 = 0;	//return value is 0 since in child thread
+	 child_tf->tf_a3 = 0;	//a3 zero if system call successful
+	 child_tf->tf_epc += 4; // increment to next  instruction for child
+	 
+	 //return value in v0 which is checked by user program. If v0 is zero then retuned to chiid process, and v0 is pid of child  if t is returned to parent
+	 // so here v0 is set to zero
+	 	 
+	 //current child thread's vmspace now points to allocated child_addrspace that was done before and sent as unsigned long
+	 curthread->t_vmspace = (struct addrspace *)converted_ptr_child_addrspace;
+	 
+	 as_activate(curthread->t_vmspace);//void as_activate(struct addrspace *) in os161/kern/include/addrspace.h
+	 
+	 //copy from kernel heap to stack
+	 struct trapframe child_frame_to_usermode =  *child_tf;//local_chiild_frame will have contents of child trap frame which is child_tf points to
+	 
+	 kfree(child_tf);// free child as no longer need
+
+	//This should not be used by threads returning from traps - they
+ 	//should just return from mips_trap(). It should be used by threads
+ 	//entering user mode for the first time - whether the child thread in
+ 	// a fork(), or into a brand-new address space after exec(), or when
+ 	// starting the first userlevel program.
+ 	
+ 	// voidmips_usermode(struct trapframe *tf) in kern/arch/mips/mips/trap.c
+	 mips_usermode(&child_frame_to_usermode);
+	
+}
+
+//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+int sys_getpid(void)
+{
+	int pid =  curthread->thread_pid;
+	return pid;
+}
+
+
+
+//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+void sys__exit(int code, int *gettingpid)
+{
+	//process_table[curthread->thread_pid].exited = 1; //set the exited flag for this process I htink not needed
+	process_table[curthread->thread_pid].exit_code = code; //set the exit code for this process
+	
+	*gettingpid = curthread->thread_pid;//to get pid of thread that will exit
+	
+	/*FOR DEBUGGING
+	kprintf("in sys__exit function in syscall.c: I am thread: %d exiting with status code %d and exited flag as %d",curthread->thread_pid,
+	process_table[curthread->thread_pid].exit_code,process_table[curthread->thread_pid].exited);//USEFUL FOR TESTING, KEEP LATER
+	*/
+	
+	//kprintf("Thread with pid %d is exiting with exit code %d\n",curthread->thread_pid,code);
+	
+	thread_exit();
+}
+
+//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+int sys_waitpid(pid_t pid, int *returncode, int flags, int * returnval)//from unistd.h
+{
+
+	if(flags!=0)
+	{	
+		*returnval = EINVAL;
+	
+		return -1;
+	}
+	
+	if(returncode == NULL)	//check later iof ok
+	{
+		*returnval = EFAULT;
+	
+		return -1;
+	}
+
+	if(process_table[pid].exited == 1)//pid of process waiting for has exited
+	{
+		*returnval = pid;
+		*returncode = process_table[pid].exit_code;
+		return 0;
+	}
+	
+	
+	
+	//semaphore in process data structure, and locks it in thread_create in thread.c when setting up its entry in processtable
+	P(process_table[(int)pid].exit_sem);//try to acquire lock and get stuck if the thread has not exited
+	
+	//kprintf("\nThread with %d going through.\n", curthread->thread_pid);
+	
+	//goes here if process that this guy is waiting for has exited
+	
+	*returncode = process_table[(int)pid].exit_code;
+	V(process_table[(int)pid].exit_sem);//try  to acquire lock
+	
+	*returnval = pid;
+	
+	return 0;
+}
+
+//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+int sys_execv(const char *prog, char *const *args)
+{
+	
+	
+	
+}

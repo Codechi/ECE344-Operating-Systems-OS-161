@@ -1,0 +1,14 @@
+palin, 4, 4
+crash, 13, 5
+add, 5, 5
+argtest, 8, 8
+sty, 10, 10
+stacktest, 5, 0
+triplebigprog, 20, 0
+malloctest 1, 5, 0
+malloctest 5, 10, 0
+matmult, 10, 0
+triplemat, 20, 0
+malloctest 2, 10, 0
+crash o, 10, 10
+forktest, 10, 0

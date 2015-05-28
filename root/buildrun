@@ -1,0 +1,22 @@
+#!/bin/csh
+# Build and compile
+
+cd ~/ece344/os161
+./configure --ostree=$HOME/ece344/root
+make
+
+cd ~/ece344/os161
+cd kern/conf
+./config ASST0
+
+cd ~/ece344/os161/kern
+cd compile/ASST0
+make depend
+make
+make install
+
+cd ~/ece344/root
+cp /cad2/ece344s/cs161/bin/sys161.conf.sample sys161.conf
+
+sys161 kernel
+

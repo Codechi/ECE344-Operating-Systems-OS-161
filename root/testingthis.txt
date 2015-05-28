@@ -1,0 +1,53 @@
+Initialized process table and number of user threads is -1
+
+OS/161 base system version 1.11
+Copyright (c) 2000, 2001, 2002, 2003
+   President and Fellows of Harvard College.  All rights reserved.
+
+Put-your-group-name-here's system version 0 (ASST3 #214)
+
+Cpu is MIPS r2000/r3000
+336k physical memory available
+in alloc_kpages: returning 180224 and hex representation is 2c000 to kheap
+in alloc_kpages: returning 184320 and hex representation is 2d000 to kheap
+in alloc_kpages: returning 188416 and hex representation is 2e000 to kheap
+Device probe...
+in alloc_kpages: returning 192512 and hex representation is 2f000 to kheap
+lamebus0 (system main bus)
+emu0 at lamebus0
+ltrace0 at lamebus0
+ltimer0 at lamebus0
+hardclock on ltimer0 (100 hz)
+beep0 at ltimer0
+rtclock0 at ltimer0
+lrandom0 at lamebus0
+in alloc_kpages: returning 196608 and hex representation is 30000 to kheap
+random0 at lrandom0
+lhd0 at lamebus0
+lhd1 at lamebus0
+lser0 at lamebus0
+con0 at lser0
+pseudorand0 (virtual)
+
+after kernel memory and ram_stealmem used, firstpaddr is 200704
+pages for kernel and stealmem: 49
+lastpaddr is 524288
+Total number of pages in physical memory: 128
+Size of 1 coremap entry: 16 and size of all entries 2048
+firstpaddr = 0x31000	coremap_ptr = 0x80031000
+freepaddr before adjusting = 202752
+new freepaddr after adjusting= 204800
+pages processed after 1st loop: 50
+loop_paddr = 204800
+freepaddr = 204800
+pages processed after 2nd loop: 128
+entry: 48  physical adress: 196608  state: 4
+entry: 49  physical adress: 200704  state: 4
+entry: 50  physical adress: 204800  state: 1
+entry: 51  physical adress: 208896  state: 1
+entry: 52  physical adress: 212992  state: 1
+entry: 53  physical adress: 217088  state: 1
+entry: 54  physical adress: 221184  state: 1
+Hello World
+
+OS/161 kernel [? for menu]: 

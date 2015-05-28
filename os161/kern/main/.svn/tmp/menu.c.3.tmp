@@ -1,0 +1,911 @@
+/*
+ * In-kernel menu and command dispatcher.
+ */
+
+#include <types.h>
+#include <kern/errno.h>
+#include <kern/unistd.h>
+#include <kern/limits.h>
+#include <lib.h>
+#include <clock.h>
+#include <thread.h>
+#include <syscall.h>
+#include <uio.h>
+#include <vfs.h>
+#include <sfs.h>
+#include <test.h>
+#include "opt-synchprobs.h"
+#include "opt-sfs.h"
+#include "opt-net.h"
+
+#define _PATH_SHELL "/bin/sh"
+
+#define MAXMENUARGS  16
+
+
+void
+getinterval(time_t s1, u_int32_t ns1, time_t s2, u_int32_t ns2,
+	    time_t *rs, u_int32_t *rns)
+{
+	if (ns2 < ns1) {
+		ns2 += 1000000000;
+		s2--;
+	}
+
+	*rns = ns2 - ns1;
+	*rs = s2 - s1;
+}
+
+////////////////////////////////////////////////////////////
+//
+// Command menu functions 
+
+/*
+ * Function for a thread that runs an arbitrary userlevel program by
+ * name.
+ *
+ * Note: this cannot pass arguments to the program. You may wish to 
+ * change it so it can, because that will make testing much easier
+ * in the future.
+ *
+ * It copies the program name because runprogram destroys the copy
+ * it gets by passing it to vfs_open(). 
+ */
+static
+void
+cmd_progthread(void *ptr, unsigned long nargs)//common_prog uses thread fork and makes new child start from cmd_progthread 
+{
+	char **args = ptr;
+	char progname[128];
+	int result;
+	
+	assert(nargs >= 1);
+
+	//int i;
+	//for(i=0;i<nargs;i++)
+	//{
+	//	kprintf("cmd_progthread: args[%d] = %s\n",i,args[i]);	//prints "testbin/add", "1", "2"
+	//}
+	
+	//if (nargs > 2) {
+	//	kprintf("Warning: argument passing from menu not supported\n");
+	//}
+
+	/* Hope we fit. */
+	assert(strlen(args[0]) < sizeof(progname));
+
+	strcpy(progname, args[0]);	//e.g testbin/add
+
+	result = runprogram(progname, args, nargs);
+	if (result) {
+		kprintf("Running program %s failed: %s\n", args[0],
+			strerror(result));
+		return;
+	}
+
+	/* NOTREACHED: runprogram only returns on error. */
+}
+
+/*
+ * Common code for cmd_prog and cmd_shell.
+ *
+ * Note that this does not wait for the subprogram to finish, but
+ * returns immediately to the menu. This is usually not what you want,
+ * so you should have it call your system-calls-assignment waitpid
+ * code after forking.
+ *
+ * Also note that because the subprogram's thread uses the "args"
+ * array and strings, until you do this a race condition exists
+ * between that code and the menu input code.
+ */
+static
+int
+common_prog(int nargs, char **args)//called from cmd_prog after dropping the "p"
+{
+	int result;
+
+#if OPT_SYNCHPROBS
+	kprintf("Warning: this probably won't work with a "
+		"synchronization-problems kernel.\n");
+#endif
+	
+	struct thread * child_ptr;
+	
+	result = thread_fork(args[0] /* thread name */,
+			args /* thread arg */, nargs /* thread arg */,
+			cmd_progthread, &child_ptr);
+	if (result) {
+		kprintf("thread_fork failed: %s\n", strerror(result));
+		return result;
+	}
+
+	int child_status;
+	int sys_waitpid_return;
+	int returning_val;
+	
+	//kprintf("Im in menu and number of user threads are %d\n",number_of_user_threads);
+	
+	while(number_of_user_threads!=0)
+	{
+		//keep looping until last thread;
+		
+		//kprintf("menu waiting for user threads to finish\n");
+		//DEBUG(DB_LOCORE, "DEBUG STATEMENT:DB_LOCORE\n");
+		thread_yield();
+		
+	}
+	
+	//kprintf("after the while loop and number of threads are %d\n",number_of_user_threads);
+		
+	return 0;
+}
+
+/*
+ * Command for running an arbitrary userlevel program.
+ */
+static
+int
+cmd_prog(int nargs, char **args)//for example , args [0] will have "p", args[1] as "testbin/palin" as array elements 
+{
+	//kprintf("args[0] = %s\nargs[1]=%s\n", args[0],args[1]);
+	
+	if (nargs < 2) {
+		kprintf("Usage: p program [arguments]\n");
+		return EINVAL;
+	}
+
+	/* drop the leading "p" */
+	args++;
+	nargs--;
+
+	return common_prog(nargs, args);
+}
+
+
+/*
+ * Command for starting the system shell.
+ */
+static
+int
+cmd_shell(int nargs, char **args)
+{
+	(void)args;
+	if (nargs != 1) {
+		kprintf("Usage: s\n");
+		return EINVAL;
+	}
+
+	args[0] = (char *)_PATH_SHELL;
+
+	return common_prog(nargs, args);
+}
+
+/*
+ * Command for changing directory.
+ */
+static
+int
+cmd_chdir(int nargs, char **args)
+{
+	if (nargs != 2) {
+		kprintf("Usage: cd directory\n");
+		return EINVAL;
+	}
+
+	return vfs_chdir(args[1]);
+}
+
+/*
+ * Command for printing the current directory.
+ */
+static
+int
+cmd_pwd(int nargs, char **args)
+{
+	char buf[PATH_MAX+1];
+	struct uio ku;
+	int result;
+
+	(void)nargs;
+	(void)args;
+
+	mk_kuio(&ku, buf, sizeof(buf)-1, 0, UIO_READ);
+	result = vfs_getcwd(&ku);
+	if (result) {
+		kprintf("vfs_getcwd failed (%s)\n", strerror(result));
+		return result;
+	}
+
+	/* null terminate */
+	buf[sizeof(buf)-1-ku.uio_resid] = 0;
+
+	/* print it */
+	kprintf("%s\n", buf);
+
+	return 0;
+}
+
+/*
+ * Command for running sync.
+ */
+static
+int
+cmd_sync(int nargs, char **args)
+{
+	(void)nargs;
+	(void)args;
+
+	vfs_sync();
+
+	return 0;
+}
+
+/*
+ * Command for doing an intentional panic.
+ */
+static
+int
+cmd_panic(int nargs, char **args)
+{
+	(void)nargs;
+	(void)args;
+
+	panic("User requested panic\n");
+	return 0;
+}
+
+/*
+ * Command for shutting down.
+ */
+static
+int
+cmd_quit(int nargs, char **args)
+{
+	(void)nargs;
+	(void)args;
+
+	vfs_sync();
+	sys_reboot(RB_POWEROFF);
+	thread_exit();
+	return 0;
+}
+
+/*
+ * Command for mounting a filesystem.
+ */
+
+/* Table of mountable filesystem types. */
+static const struct {
+	const char *name;
+	int (*func)(const char *device);
+} mounttable[] = {
+#if OPT_SFS
+	{ "sfs", sfs_mount },
+#endif
+	{ NULL, NULL }
+};
+
+static
+int
+cmd_mount(int nargs, char **args)
+{
+	char *fstype;
+	char *device;
+	int i;
+
+	if (nargs != 3) {
+		kprintf("Usage: mount fstype device:\n");
+		return EINVAL;
+	}
+
+	fstype = args[1];
+	device = args[2];
+
+	/* Allow (but do not require) colon after device name */
+	if (device[strlen(device)-1]==':') {
+		device[strlen(device)-1] = 0;
+	}
+
+	for (i=0; mounttable[i].name; i++) {
+		if (!strcmp(mounttable[i].name, fstype)) {
+			return mounttable[i].func(device);
+		}
+	}
+	kprintf("Unknown filesystem type %s\n", fstype);
+	return EINVAL;
+}
+
+static
+int
+cmd_unmount(int nargs, char **args)
+{
+	char *device;
+
+	if (nargs != 2) {
+		kprintf("Usage: unmount device:\n");
+		return EINVAL;
+	}
+
+	device = args[1];
+
+	/* Allow (but do not require) colon after device name */
+	if (device[strlen(device)-1]==':') {
+		device[strlen(device)-1] = 0;
+	}
+
+	return vfs_unmount(device);
+}
+
+/*
+ * Command to set the "boot fs". 
+ *
+ * The boot filesystem is the one that pathnames like /bin/sh with
+ * leading slashes refer to.
+ *
+ * The default bootfs is "emu0".
+ */
+static
+int
+cmd_bootfs(int nargs, char **args)
+{
+	char *device;
+
+	if (nargs != 2) {
+		kprintf("Usage: bootfs device\n");
+		return EINVAL;
+	}
+
+	device = args[1];
+
+	/* Allow (but do not require) colon after device name */
+	if (device[strlen(device)-1]==':') {
+		device[strlen(device)-1] = 0;
+	}
+
+	return vfs_setbootfs(device);
+}
+
+static
+int
+cmd_kheapstats(int nargs, char **args)
+{
+	(void)nargs;
+	(void)args;
+
+	kheap_printstats();
+	
+	return 0;
+}
+
+////////////////////////////////////////
+//
+// Menus.
+
+static
+void
+showmenu(const char *name, const char *x[])
+{
+	int ct, half, i;
+
+	kprintf("\n");
+	kprintf("%s\n", name);
+	
+	for (i=ct=0; x[i]; i++) {
+		ct++;
+	}
+	half = (ct+1)/2;
+
+	for (i=0; i<half; i++) {
+		kprintf("    %-36s", x[i]);
+		if (i+half < ct) {
+			kprintf("%s", x[i+half]);
+		}
+		kprintf("\n");
+	}
+
+	kprintf("\n");
+}
+
+static const char *opsmenu[] = {
+	"[s]       Shell                     ",
+	"[p]       Other program             ",
+	"[dbflags] Debug flags               ",
+	"[mount]   Mount a filesystem        ",
+	"[unmount] Unmount a filesystem      ",
+	"[bootfs]  Set \"boot\" filesystem   ",
+	"[pf]      Print a file              ",
+	"[cd]      Change directory          ",
+	"[pwd]     Print current directory   ",
+	"[sync]    Sync filesystems          ",
+	"[panic]   Intentional panic         ",
+	"[q]       Quit and shut down        ",
+	NULL
+};
+
+static
+int
+cmd_opsmenu(int n, char **a)
+{
+	(void)n;
+	(void)a;
+
+	showmenu("OS/161 operations menu",opsmenu);
+	return 0;
+}
+
+
+
+
+//--------------------------------------------------------dbflags Menu------------------------------------------------------------------
+
+static const char *dbflags_menu[] = { //(Shafaaf)-prints these after press '?' which prints operations, then 'dbflags'  for dbflags MENU
+	"[df 1 on/off]       DB_LOCORE      ",
+	"[df 2 on/off]       DB_SYSCALL     ",
+	"[df 3 on/off]       DB_INTERRUPT   ",
+	"[df 4 on/off]       DB_DEVICE      ",
+	"[df 5 on/off]       DB_THREADS     ",
+	"[df 6 on/off]       DB_VM          ",
+	"[df 7 on/off]       DB_EXEC        ",
+	"[df 8 on/off]       DB_VFS         ",
+	"[df 9 on/off]       DB_SFS   	    ",
+	"[df 10 on/off]      DB_NET         ",
+	"[df 11 on/off]      DB_NETFS       ",
+	"[df 12 on/off]      DB_KMALLOC     ",
+	NULL
+};
+
+static
+int
+cmd_dbflags(int n, char **a)
+{
+	(void)n;
+	(void)a;
+
+	showmenu("OS/161 Debug flags", dbflags_menu);	//(SHafaaf) - calls above function to print menu
+	kprintf("Current value of dbflags is 0x%x\n",dbflags);	//(Shafaaf) - prints out dbflags value
+	
+	return 0;
+	//return 2;
+	
+}
+
+/* ------------------------------------------dbflags debugging statements switch---------------------------------------------------*/
+static
+int
+cmd_df(int n, char **a)	//(Shafaaf) - to change value of dbflags to turn off or on debug macros
+{
+	(void)n;	//(Shafaaf) - n has number of arguments
+	(void)a;	//(Shafaaf)- a[0],a[1] etc has parameters passed
+	
+	if(n<3 || n>3) //(Shafaaf) check if extra arguments in command line for df
+	
+	{
+		kprintf("Usage: df nr on/off\n");//(Shafaaf) wrong number of arguments
+	}
+	else
+	{
+		if(strcmp(a[1], "1") == 0)//DB_LOCORE
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x001;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x001);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+
+		else if(strcmp(a[1], "2") == 0)//DB_SYSCALL
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x002;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x002);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+		
+		else if(strcmp(a[1], "3") == 0)//DB_INTERRUPT
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x004;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x004);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+		
+		else if(strcmp(a[1], "4") == 0)//DB_DEVICE
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x008;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x008);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+		
+		else if(strcmp(a[1], "5") == 0) //DB_THREADS
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x010;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x010);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+		
+		else if(strcmp(a[1], "6") == 0)//DB_VM
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x020;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x20);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+		
+		else if(strcmp(a[1], "7") == 0)//DB_EXEC
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x040;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x040);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+		
+		else if(strcmp(a[1], "8") == 0)//DB_VFS
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x080;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x080);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+		
+		else if(strcmp(a[1], "9") == 0)//DB_SFS
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x100;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x100);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+		
+		else if(strcmp(a[1], "10") == 0)//DB_NET
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x200;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x200);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+		
+		else if(strcmp(a[1], "11") == 0)//DB_NETFS
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x400;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x400);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+		
+		else if(strcmp(a[1], "12") == 0)//DB_KMALLOC
+		{
+			if(strcmp(a[2], "on") == 0)
+				dbflags = dbflags | 0x800;
+
+			else if (strcmp(a[2], "off") == 0)
+				dbflags = dbflags & ~(0x800);
+			else
+				kprintf("Usage: df nr on/off\n");//Incorrect argument for on/off
+		}
+		
+		else
+		{
+			kprintf("Usage: df nr on/off\n");//(Shafaaf) out of range number
+		}
+	}	
+		
+	//kprintf("New value of dbflags: 0x%x\n",dbflags);// testing
+	//kprintf("New value of inverted dbflags: 0x%x\n",~dbflags);//testing
+
+	//DEBUG Statements
+	/*
+	DEBUG(DB_LOCORE, "DEBUG STATEMENT:DB_LOCORE\n");
+	DEBUG(DB_SYSCALL, "DEBUG STATEMENT:DB_SYSCALL\n");
+	DEBUG(DB_INTERRUPT, "DEBUG STATEMENT:DB_INTERRUPT\n");
+	DEBUG(DB_DEVICE, "DEBUG STATEMENT:DB_DEVICE\n");
+	DEBUG(DB_THREADS, "DEBUG STATEMENT:DB_THREADS\n");
+	DEBUG(DB_VM, "DEBUG STATEMENT:DB_VM\n");
+	DEBUG(DB_EXEC, "DEBUG STATEMENT:DB_EXEC\n");
+	DEBUG(DB_VFS, "DEBUG STATEMENT:DB_VFS\n");
+	DEBUG(DB_SFS, "DEBUG STATEMENT:DB_SFS\n");
+	DEBUG(DB_NET, "DEBUG STATEMENT:DB_NET\n");
+	DEBUG(DB_NETFS, "DEBUG STATEMENT:DB_NETFS\n");
+	DEBUG(DB_KMALLOC, "DEBUG STATEMENT:DB_KMALLOC\n");
+	*/
+	
+	return 0;
+	
+}
+
+//-------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+static const char *testmenu[] = {
+	"[at]  Array test                    ",
+	"[bt]  Bitmap test                   ",
+	"[qt]  Queue test                    ",
+	"[km1] Kernel malloc test            ",
+	"[km2] kmalloc stress test           ",
+	"[tt1] Thread test 1                 ",
+	"[tt2] Thread test 2                 ",
+	"[tt3] Thread test 3                 ",
+#if OPT_NET
+	"[net] Network test                  ",
+#endif
+	"[sy1] Semaphore test                ",
+	"[sy2] Lock test             (1)     ",
+	"[sy3] CV test               (1)     ",
+	"[fs1] Filesystem test               ",
+	"[fs2] FS read stress        (4)     ",
+	"[fs3] FS write stress       (4)     ",
+	"[fs4] FS write stress 2     (4)     ",
+	"[fs5] FS create stress      (4)     ",
+	NULL
+};
+
+static
+int
+cmd_testmenu(int n, char **a)
+{
+	(void)n;
+	(void)a;
+
+	showmenu("OS/161 tests menu", testmenu);
+	kprintf("    (1) These tests will fail until you finish the "
+		"synch assignment.\n");
+	kprintf("    (4) These tests will fail until you finish the "
+		"file system assignment.\n");
+	kprintf("\n");
+
+	return 0;
+}
+
+static const char *mainmenu[] = {
+	"[?o] Operations menu                ",
+	"[?t] Tests menu                     ",
+#if OPT_SYNCHPROBS
+	"[1a] Cat/mouse with semaphores      ",
+	"[1b] Cat/mouse with locks and CVs   ",
+	"[1c] Stoplight                      ",
+#endif
+	"[kh] Kernel heap stats              ",
+	"[q] Quit and shut down              ",
+	NULL
+};
+
+static
+int
+cmd_mainmenu(int n, char **a)
+{
+	(void)n;
+	(void)a;
+
+	showmenu("OS/161 kernel menu", mainmenu);
+	return 0;
+}
+
+////////////////////////////////////////
+//
+// Command table.
+
+static struct {
+	const char *name;
+	int (*func)(int nargs, char **args);
+} cmdtable[] = {
+	/* menus */
+	{ "?",		cmd_mainmenu },	//(Shafaaf) - e.g ? is name, and cmd_mainmenu is pointer to function returning int
+	{ "h",		cmd_mainmenu },
+	{ "help",	cmd_mainmenu },
+	{ "?o",		cmd_opsmenu },
+	{ "?t",		cmd_testmenu },
+
+	/* operations */
+	{ "s",		cmd_shell },
+	{ "p",		cmd_prog },
+	{ "dbflags",	cmd_dbflags },	// (Shafaaf) -  newly added for dbflags (Shafaaf) will work after writin function cmd_dbflags
+	{ "mount",	cmd_mount },
+	{ "unmount",	cmd_unmount },
+	{ "bootfs",	cmd_bootfs },
+	{ "pf",		printfile },
+	{ "cd",		cmd_chdir },
+	{ "pwd",	cmd_pwd },
+	{ "sync",	cmd_sync },
+	{ "panic",	cmd_panic },
+	{ "q",		cmd_quit },
+	{ "exit",	cmd_quit },
+	{ "halt",	cmd_quit },
+	{ "df",	        cmd_df },	//(Shafaaf) - df for changing dbflags variable
+
+#if OPT_SYNCHPROBS
+	/* in-kernel synchronization problems */
+	{ "1a",		catmousesem },
+	{ "1b",		catmouselock },
+	{ "1c",		createcars },
+#endif
+
+	/* stats */
+	{ "kh",         cmd_kheapstats },
+
+	/* base system tests */
+	{ "at",		arraytest },
+	{ "bt",		bitmaptest },
+	{ "qt",		queuetest },
+	{ "km1",	malloctest },
+	{ "km2",	mallocstress },
+#if OPT_NET
+	{ "net",	nettest },
+#endif
+	{ "tt1",	threadtest },
+	{ "tt2",	threadtest2 },
+	{ "tt3",	threadtest3 },
+	{ "sy1",	semtest },
+
+	/* synchronization assignment tests */
+	{ "sy2",	locktest },
+	{ "sy3",	cvtest },
+
+	/* file system assignment tests */
+	{ "fs1",	fstest },
+	{ "fs2",	readstress },
+	{ "fs3",	writestress },
+	{ "fs4",	writestress2 },
+	{ "fs5",	createstress },
+
+	{ NULL, NULL }
+};
+
+/*
+ * Process a single command.
+ */
+static
+int
+cmd_dispatch(char *cmd)	//(Shafaaf) cmd is '?', sent from menu_execute sent with 'command' variable
+{
+	
+	
+	time_t beforesecs, aftersecs, secs;
+	u_int32_t beforensecs, afternsecs, nsecs;
+	char *args[MAXMENUARGS];
+	int nargs=0;
+	char *word;
+	char *context;
+	int i, result;
+
+	for (word = strtok_r(cmd, " \t", &context);
+	     word != NULL;
+	     word = strtok_r(NULL, " \t", &context)) {	//word set here
+
+		if (nargs >= MAXMENUARGS) {
+			kprintf("Command line has too many words\n");
+			return E2BIG;
+		}
+		args[nargs++] = word;
+	}
+
+	if (nargs==0) {
+		return 0;
+	}
+
+	for (i=0; cmdtable[i].name; i++) {
+		if (*cmdtable[i].name && !strcmp(args[0], cmdtable[i].name)) {
+			assert(cmdtable[i].func!=NULL);
+
+			gettime(&beforesecs, &beforensecs);
+
+			result = cmdtable[i].func(nargs, args);	//(Shafaaf) -comes here after printing dbflags menu
+			
+			
+			gettime(&aftersecs, &afternsecs);
+			getinterval(beforesecs, beforensecs,
+				    aftersecs, afternsecs,
+				    &secs, &nsecs);
+			
+			
+			kprintf("Operation took %lu.%09lu seconds\n",	//VERY IMP - NEED TO UNCOMMENT THIS LATER
+				(unsigned long) secs,
+				(unsigned long) nsecs);
+			
+			return result;
+		}
+	}
+
+	kprintf("%s: Command not found\n", args[0]);
+	return EINVAL;
+}
+
+/*
+ * Evaluate a command line that may contain multiple semicolon-delimited
+ * commands.
+ *
+ * If "isargs" is set, we're doing command-line processing; print the
+ * comamnds as we execute them and panic if the command is invalid or fails.
+ */
+static
+void
+menu_execute(char *line, int isargs)	//(Shafaaf) - line has full sentence including spaces
+{
+	char *command;	
+	char *context;	
+	int result;
+	
+	
+
+	for (command = strtok_r(line, ";", &context);
+	     command != NULL;
+	     command = strtok_r(NULL, ";", &context)) {
+
+		if (isargs) {
+			kprintf("OS/161 kernel: %s\n", command);
+		}
+
+			
+		result = cmd_dispatch(command);
+		
+		if (result) {
+			kprintf("Menu command failed: %s\n", strerror(result));	//if wrong input from user in menu
+			if (isargs) {
+				panic("Failure processing kernel arguments\n");
+			}
+		}
+	}
+}
+
+/*
+ * Command menu main loop.
+ *
+ * First, handle arguments passed on the kernel's command line from
+ * the bootloader. Then loop prompting for commands.
+ *
+ * The line passed in from the bootloader is treated as if it had been
+ * typed at the prompt. Semicolons separate commands; spaces and tabs
+ * separate words (command names and arguments).
+ *
+ * So, for instance, to mount an SFS on lhd0 and make it the boot
+ * filesystem, and then boot directly into the shell, one would use
+ * the kernel command line
+ *
+ *      "mount sfs lhd0; bootfs lhd0; s"
+ */
+
+void
+menu(char *args)	//(Shafaaf) - first called from main.c after booting, printing hello world, DEBUG statments
+{
+	char buf[64];
+
+	menu_execute(args, 1);
+
+	while (1) {
+		kprintf("OS/161 kernel [? for menu]: ");//do not uncomment or else would say "OS CRASHED"
+		kgets(buf, sizeof(buf));
+		menu_execute(buf, 0);
+	}
+}
