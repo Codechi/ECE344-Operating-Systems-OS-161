@@ -1,4 +1,4 @@
-#Operating Systems
+#ECE344 Operating Systems
 
 Harvard's teaching Operating System OS161 extension for the course ECE344 at the University OF Toronto.
 Completed lab 0, lab 1, lab 2 fully.
